@@ -1,0 +1,140 @@
+---
+title: "STA 445 Chapter 13"
+author: "Dr. Robert Buscaglia"
+date: "`r format(Sys.time(),  '%B %d, %Y')`"
+output: pdf_document
+fontsize: 12pt
+geometry: margin=1.25cm
+header-includes:
+   - \usepackage{amssymb}
+   - \let\rmarkdownfootnote\footnote%
+   - \def\footnote{\protect\rmarkdownfootnote}
+   - \usepackage{titling}
+   - \setlength{\droptitle}{-2em}
+   - \pretitle{\vspace{\droptitle}\centering\huge}
+   - \posttitle{\par}
+   - \preauthor{\centering\large\emph}
+   - \postauthor{\par}
+   - \predate{\centering\large\emph}
+   - \postdate{\par}
+---
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(ggplot2)
+library(broom)
+library(knitr)
+library(stringr)
+library(lubridate)
+library(tidyr)
+library(forcats)
+```
+
+# Exercise 3
+
+We will fully clean the government data and create some interesting analysis results.
+
+Load the data.  Viewing the original excel file is a good idea!
+
+```{r}
+Budget <- readxl::read_xlsx('US_Gov_Budget_1962_2020.xlsx', skip=2)
+```
+
+We will want to create columns for the functions and subfunctions within the document.  Let us rename these Department for now.
+
+```{r}
+Budget.2 <- Budget %>% rename(`Department` = `Function and Subfunction`)
+```
+
+We should remove any totals or budget information.  There are also two rows that inform the user of what NAs indicate.
+
+```{r}
+Budget.3 <- Budget.2 %>% 
+  filter(!str_detect(Department, 
+                     'Total|Subtotal|[oO]n-budget|[oO]ff-budget|Not available'))
+```
+
+Create an ID column for the functions and subfunctions by extracting it from the department name.  I then relocate the rows to keep the ID at the beginning, and then remove the ID number from the Department column.
+
+```{r}
+Budget.4 <- Budget.3 %>% 
+  mutate(ID_number = str_extract(Department, '\\d+')) %>%
+  relocate(ID_number) %>% 
+  mutate(Department = str_remove_all(Department, '\\d+')) %>% 
+  fill(ID_number)
+```
+
+Functions correspond to rows which have no numerical entries.  We want to split the Department column into Functions and Subfunctions by recognizing this element.  We can use an `ifelse` statement to allow us to identify which Department headings are functions, and create two corresponding new columns to indicate the function and subfunction groupings.  We should finish cleaning by ensuring we no longer keep the Department column when finished.
+
+```{r}
+Budget.5 <- Budget.4 %>% 
+  mutate(Function = ifelse(is.na(`2015`), Department, NA)) %>% 
+  relocate(Function) %>% 
+  fill(Function) %>% 
+  mutate(Subfunction = ifelse(!is.na(`2015`), Department, NA)) %>% 
+  relocate(Subfunction) %>% 
+  filter(!is.na(`2015`)) %>% 
+  relocate(ID_number, Function) %>%
+  select(-Department) %>% 
+  mutate(Function = str_replace_all(Function, '\\:', ''))
+``` 
+
+We are ready to start calculating some summary values.  We can pivot the data to clean a bit more.  Let us create a long version of this data set that has only four columns: Function, Subfunction, Year, Amount.
+
+```{r}
+Budget.long <- Budget.5 %>% 
+  pivot_longer(names_to = 'Year', values_to = 'Amount', `2001`:`2015`) %>% 
+  select(Function, Subfunction, Year, Amount)
+```
+
+There are some entries for the Amounts that are non-numeric.  Clean these observations out using a filter.
+
+```{r}
+Budget.long.2 <- Budget.long %>% 
+  mutate(Amount = as.numeric(Amount)) %>% 
+  filter(!is.na(Amount))
+```
+
+```{r, eval=FALSE}
+Budget.long %>% filter(!str_detect(Amount, '\\.'))
+```
+
+Before making any calculations, let us change the variable type of Year and Amount to be numeric rather than strings.
+
+```{r}
+Budget.long.3 <- Budget.long.2 %>% 
+  mutate(Year = as.numeric(Year), Amount = as.numeric(Amount))
+```
+
+Now consider information you may like to know.  How about the mean Amount of funding for each subgroup over the duration available.
+
+```{r}
+Budget.long.3 %>% 
+  group_by(Subfunction) %>% 
+  summarize(Mean.Budget = mean(Amount)) %>% 
+  arrange(desc(Mean.Budget)) %>% slice(1:10) %>% 
+  kable(align='lc', caption='Top 10 Mean Budgets for Subfunctions.')
+```
+
+How about the mean Amount of funding for each Function over the duration available.
+
+```{r}
+Budget.long.3 %>% 
+  group_by(Function) %>% 
+  summarize(Mean.Budget = mean(Amount)) %>% 
+  arrange(desc(Mean.Budget)) %>% slice(1:10) %>% 
+  kable(align='lc', caption='Top 10 Mean Budgets for Functions')
+```
+
+Let us extract the top five Functions and create a graph of their total budget.  I chose to omit the `Net Interest`.
+
+```{r, warning=FALSE, message=FALSE}
+Budget.long.3 %>% 
+  filter(str_detect(`Function`, 'Defense|Health|Military|Security|Medicare')) %>% 
+  group_by(Function, Year) %>% 
+  summarize(Total = sum(Amount)) %>%
+  ggplot(aes(x = Year, y = Total)) + 
+  geom_point(aes(color = Function)) + 
+  geom_line(aes(color=Function)) +
+  labs(title = 'Yearly Budget Totals for Five Major US Departments')
+```
